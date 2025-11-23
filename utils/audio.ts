@@ -1,4 +1,5 @@
 
+
 export const stopNativeAudio = () => {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     window.speechSynthesis.cancel();
@@ -8,7 +9,27 @@ export const stopNativeAudio = () => {
 // Global reference to prevent garbage collection of the utterance
 let currentUtterance: SpeechSynthesisUtterance | null = null;
 
-export const speak = (text: string, language: string, onEnd: () => void) => {
+const waitForVoices = (): Promise<SpeechSynthesisVoice[]> => {
+    return new Promise((resolve) => {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+            resolve(voices);
+            return;
+        }
+        
+        // Timeout to prevent hanging if voices never load
+        const timeout = setTimeout(() => {
+            resolve([]);
+        }, 3000);
+
+        window.speechSynthesis.onvoiceschanged = () => {
+            clearTimeout(timeout);
+            resolve(window.speechSynthesis.getVoices());
+        };
+    });
+};
+
+export const speak = async (text: string, language: string, onEnd: () => void) => {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     console.warn('Speech synthesis not supported');
     onEnd();
@@ -42,18 +63,16 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   const targetLang = langMap[language] || 'en-US';
   utterance.lang = targetLang;
 
-  // Robust Voice Selection
-  const voices = window.speechSynthesis.getVoices();
+  // Robust Voice Selection: Wait for voices to load first
+  const voices = await waitForVoices();
   
   // Try to find a voice that specifically matches the requested language
-  // If we find one, explicitly set it. If NOT, leave utterance.voice as null.
-  // Leaving it null forces the OS to use its default engine for 'utterance.lang',
-  // which is often better than forcing a mismatch.
   const matchingVoice = voices.find(v => v.lang === targetLang) || 
                         voices.find(v => v.lang.includes(language));
 
   if (matchingVoice) {
       utterance.voice = matchingVoice;
+      console.log(`Selected Voice: ${matchingVoice.name} (${matchingVoice.lang})`);
   } else {
       console.log(`No specific voice found for ${targetLang}, relying on OS default.`);
   }
