@@ -11,7 +11,8 @@ import {
     resumeGlobalAudio, 
     getGlobalAudioContext,
     speak,
-    unlockAudioContext
+    unlockAudioContext,
+    warmupTTS
 } from '../utils/audio';
 import { Icon } from '../constants/icons';
 
@@ -47,6 +48,7 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
 
         // Unlock audio for mobile
         unlockAudioContext();
+        warmupTTS(); // Unlocks SpeechSynthesis
 
         // Try Backend API (High Quality AI)
         try {
@@ -81,7 +83,6 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
         }
     } catch (error) {
         // FALLBACK: Native TTS
-        // If the AI fails, we use the robotic voice, but it's better than silence.
         if (isMounted.current) {
             const textToSpeak = `${placeContent.name}. ${placeContent.importance}`.trim();
             speak(textToSpeak, language, () => {
@@ -104,7 +105,8 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
     }
 
     if (audioCache[cacheKey]) {
-        unlockAudioContext(); // Ensure unlocked before playing cache
+        unlockAudioContext(); 
+        warmupTTS();
         playGlobalAudio(audioCache[cacheKey], () => {
              if(isMounted.current) setStatus('stopped');
         });

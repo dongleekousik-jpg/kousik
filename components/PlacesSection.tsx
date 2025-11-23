@@ -13,7 +13,8 @@ import {
   getAudioFromDB,
   saveAudioToDB,
   speak,
-  unlockAudioContext
+  unlockAudioContext,
+  warmupTTS
 } from '../utils/audio';
 
 interface PlacesSectionProps {
@@ -126,9 +127,10 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // CRITICAL: Unlock audio context immediately on user interaction
+      // CRITICAL: Unlock audio contexts immediately on user interaction
       // This prevents mobile browsers from blocking the async play() call later
       unlockAudioContext();
+      warmupTTS(); // Unlocks SpeechSynthesis on iOS/Android
       
       // If clicking the same playing place, stop it.
       if (playingPlaceId === place.id) {
@@ -150,10 +152,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
       // Remove quotes to prevent TTS weirdness
       const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
-
-      // --- STRATEGY UPDATE ---
-      // We now try the High-Quality API for ALL languages first.
-      // If the API fails (network/timeout), we fallback to Native TTS (robotic).
       
       const cacheKey = `${language}-${place.id}`;
 
