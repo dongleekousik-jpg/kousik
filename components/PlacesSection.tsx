@@ -4,6 +4,8 @@ import { useLanguage } from '../App';
 import { Place } from '../types';
 import { Icon } from '../constants/icons';
 import { 
+  decode, 
+  decodeAudioData, 
   playGlobalAudio, 
   stopGlobalAudio, 
   getGlobalAudioContext, 
@@ -11,9 +13,8 @@ import {
   getAudioFromDB,
   saveAudioToDB,
   speak,
-  startKeepAlive, 
-  stopKeepAlive,
-  base64ToAudioBuffer // UPDATED: Now Async
+  unlockAudioContext,
+  warmupTTS
 } from '../utils/audio';
 
 interface PlacesSectionProps {
@@ -122,8 +123,9 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // 1. CRITICAL: Start Keep Alive silence immediately on click to prevent mobile sleep
-      startKeepAlive();
+      // 1. Immediate Unlock to prevent mobile blocking
+      unlockAudioContext();
+      warmupTTS(); 
       
       if (playingPlaceId === place.id) {
           stopGlobalAudio();
@@ -132,8 +134,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       }
 
       stopGlobalAudio();
-      startKeepAlive();
-      
       setPlayingPlaceId(null);
 
       const requestId = `${Date.now()}-${place.id}`;
@@ -165,8 +165,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
           if (cachedBase64DB) {
               const ctx = getGlobalAudioContext();
-              // Now await because base64ToAudioBuffer uses async decodeAudioData
-              const audioBuffer = await base64ToAudioBuffer(cachedBase64DB, ctx);
+              const audioBuffer = await decodeAudioData(decode(cachedBase64DB), ctx, 24000, 1);
               audioCache[cacheKey] = audioBuffer;
               
               if (isMounted.current) {
@@ -191,7 +190,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
                   });
                   const contentType = response.headers.get("content-type");
                   if (!response.ok || !contentType || !contentType.includes("application/json")) {
-                      throw new Error("API Unavailable");
+                      throw new Error("API Error");
                   }
                   return await response.json();
               } catch (e) {
@@ -211,8 +210,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               
               if (activeRequestId.current === requestId && isMounted.current) {
                    const ctx = getGlobalAudioContext();
-                   // Now await
-                   const audioBuffer = await base64ToAudioBuffer(data.base64Audio, ctx);
+                   const audioBuffer = await decodeAudioData(decode(data.base64Audio), ctx, 24000, 1);
                    audioCache[cacheKey] = audioBuffer;
                    
                    playGlobalAudio(audioBuffer, () => {
@@ -222,7 +220,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               }
           } catch (apiError) {
               console.warn("Using Native Fallback", apiError);
-              stopKeepAlive(); // Stop silence before native speak
               
               if (activeRequestId.current === requestId && isMounted.current) {
                   speak(textToSpeak, language, () => {
@@ -234,7 +231,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
       } catch (error) {
           console.error("Playback failed", error);
-          stopKeepAlive();
       } finally {
           if (isMounted.current && activeRequestId.current === requestId) {
               setLoadingPlaceId(null);
