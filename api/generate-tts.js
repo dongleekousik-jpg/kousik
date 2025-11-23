@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Modality } from "@google/genai";
 
 export default async function handler(req, res) {
@@ -53,18 +54,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'No text provided' });
   }
 
-  // Optimize text length
-  if (text.length > 400) {
+  // Optimize text length - Reduced slightly to ensure safer native fallback if needed
+  if (text.length > 350) {
       const parts = text.split('.');
       let truncated = "";
       for (const part of parts) {
-          if ((truncated.length + part.length) < 400) {
+          if ((truncated.length + part.length) < 350) {
               truncated += part + ".";
           } else {
               break;
           }
       }
-      text = truncated || text.substring(0, 400); 
+      text = truncated || text.substring(0, 350); 
   }
 
   try {

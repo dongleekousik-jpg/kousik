@@ -52,8 +52,15 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   activeUtterances = [];
   isStopped = false;
 
-  // --- CHUNKING STRATEGY ---
-  const rawChunks = text.match(/[^.!?]+[.!?]+|[^\s]+(?=\s|$)/g) || [text];
+  // --- IMPROVED CHUNKING STRATEGY ---
+  // Fix: The previous regex split by space if punctuation was missing.
+  // Now we strictly look for sentence endings (. ! ? |) or play the whole block.
+  // This solves the "one word at a time" stuttering in Hindi/Tamil.
+  
+  const normalizedText = text.replace(/\|/g, '.'); // Handle Hindi 'Poorna Viram'
+  
+  // Match sentences ending in punctuation OR take the whole remainder if no punctuation
+  const rawChunks = normalizedText.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [normalizedText];
   const chunks = rawChunks.map(c => c.trim()).filter(c => c.length > 0);
 
   if (chunks.length === 0) {
@@ -98,7 +105,7 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
       }
 
       // Tuning for better sound
-      utterance.rate = 0.85; // Slightly slower is more intelligible
+      utterance.rate = 0.9; // Normal speed
       utterance.pitch = 1.0; 
 
       utterance.onend = () => {
