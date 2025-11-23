@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { useLanguage } from '../App';
 import { 
@@ -69,7 +68,8 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
 
             if (isMounted.current) {
                 const ctx = getGlobalAudioContext();
-                const audioBuffer = base64ToAudioBuffer(data.base64Audio, ctx);
+                // Await the new async WAV decoder
+                const audioBuffer = await base64ToAudioBuffer(data.base64Audio, ctx);
                 audioCache[cacheKey] = audioBuffer;
                 
                 playGlobalAudio(audioBuffer, () => {

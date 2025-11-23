@@ -17,7 +17,7 @@ let keepAliveSource: AudioBufferSourceNode | null = null;
 export const audioCache: Record<string, AudioBuffer> = {};
 
 // --- IndexedDB ---
-const DB_NAME = 'GovindaMitraAudioDB_v10';
+const DB_NAME = 'GovindaMitraAudioDB_v11';
 const STORE_NAME = 'audio_store';
 
 const openDB = (): Promise<IDBDatabase> => {
@@ -67,14 +67,12 @@ export const getAudioFromDB = async (key: string): Promise<string | null> => {
 export function getGlobalAudioContext(): AudioContext {
   if (!globalAudioContext) {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    globalAudioContext = new AudioContextClass({ sampleRate: 24000 }); // Gemini TTS is 24kHz
+    globalAudioContext = new AudioContextClass({ sampleRate: 24000 }); // Match Gemini 24kHz
   }
   return globalAudioContext;
 }
 
 // CRITICAL FOR MOBILE: Keeps the audio thread open with "Near Silence"
-// We use a very faint noise instead of pure silence because some aggressive battery savers
-// stop the audio engine if it detects pure zeros.
 export function startKeepAlive() {
     const ctx = getGlobalAudioContext();
     
@@ -148,12 +146,57 @@ export function initializeAudioUnlocker() {
     window.addEventListener('click', unlock, { passive: true });
 }
 
-// --- MANUAL PCM DECODING ---
-// Gemini returns raw PCM 16-bit integers at 24kHz. 
-// Browser decodeAudioData() expects WAV headers, so it fails.
-// We must convert bytes -> Int16 -> Float32 manually.
+// --- WAV HEADER INJECTION STRATEGY ---
+// Instead of manual Float32 conversion (which fails often), we wrap the RAW PCM
+// in a valid WAV container and let the browser decode it natively.
 
-export function base64ToAudioBuffer(base64: string, ctx: AudioContext): AudioBuffer {
+function addWavHeader(samples: Uint8Array, sampleRate: number = 24000, numChannels: number = 1, bitDepth: number = 16): ArrayBuffer {
+    const buffer = new ArrayBuffer(44 + samples.length);
+    const view = new DataView(buffer);
+
+    // RIFF identifier
+    writeString(view, 0, 'RIFF');
+    // RIFF chunk length
+    view.setUint32(4, 36 + samples.length, true);
+    // RIFF type
+    writeString(view, 8, 'WAVE');
+    // format chunk identifier
+    writeString(view, 12, 'fmt ');
+    // format chunk length
+    view.setUint32(16, 16, true);
+    // sample format (raw)
+    view.setUint16(20, 1, true);
+    // channel count
+    view.setUint16(22, numChannels, true);
+    // sample rate
+    view.setUint32(24, sampleRate, true);
+    // byte rate (sampleRate * blockAlign)
+    view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true);
+    // block align (channel count * bytes per sample)
+    view.setUint16(32, numChannels * (bitDepth / 8), true);
+    // bits per sample
+    view.setUint16(34, bitDepth, true);
+    // data chunk identifier
+    writeString(view, 36, 'data');
+    // data chunk length
+    view.setUint32(40, samples.length, true);
+
+    // Write the PCM samples
+    const bytes = new Uint8Array(buffer, 44);
+    bytes.set(samples);
+
+    return buffer;
+}
+
+function writeString(view: DataView, offset: number, string: string) {
+    for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+    }
+}
+
+// This is the main function components should call
+export async function base64ToAudioBuffer(base64: string, ctx: AudioContext): Promise<AudioBuffer> {
+    // 1. Decode Base64 string to raw binary string
     const binaryString = window.atob(base64.replace(/\s/g, ''));
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
@@ -161,19 +204,11 @@ export function base64ToAudioBuffer(base64: string, ctx: AudioContext): AudioBuf
         bytes[i] = binaryString.charCodeAt(i);
     }
 
-    // Convert to Int16
-    const int16Array = new Int16Array(bytes.buffer);
-    
-    // Create AudioBuffer (1 Channel, 24kHz)
-    const audioBuffer = ctx.createBuffer(1, int16Array.length, 24000);
-    const channelData = audioBuffer.getChannelData(0);
+    // 2. Add WAV Header (24kHz, 16-bit Mono is standard for Gemini Flash)
+    const wavBytes = addWavHeader(bytes, 24000, 1, 16);
 
-    // Convert Int16 to Float32 (-1.0 to 1.0)
-    for (let i = 0; i < int16Array.length; i++) {
-        channelData[i] = int16Array[i] / 32768.0;
-    }
-
-    return audioBuffer;
+    // 3. Decode using browser's native decoder (Robust & Hardware Accelerated)
+    return await ctx.decodeAudioData(wavBytes);
 }
 
 export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
@@ -181,19 +216,8 @@ export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
   
   const ctx = getGlobalAudioContext();
   
-  if (ctx.state === 'suspended') {
-      ctx.resume().then(() => {
-          startSource(ctx, buffer, onEnded);
-      }).catch(e => {
-          startSource(ctx, buffer, onEnded);
-      });
-  } else {
-      startSource(ctx, buffer, onEnded);
-  }
-}
-
-function startSource(ctx: AudioContext, buffer: AudioBuffer, onEnded?: () => void) {
-    try {
+  const play = () => {
+       try {
         const source = ctx.createBufferSource();
         source.buffer = buffer;
         source.connect(ctx.destination);
@@ -206,6 +230,16 @@ function startSource(ctx: AudioContext, buffer: AudioBuffer, onEnded?: () => voi
         console.error("Source start failed", e);
         if(onEnded) onEnded();
     }
+  };
+  
+  if (ctx.state === 'suspended') {
+      ctx.resume().then(play).catch(e => {
+          console.error("Resume failed, trying play anyway", e);
+          play();
+      });
+  } else {
+      play();
+  }
 }
 
 export function stopGlobalAudio() {
@@ -237,7 +271,6 @@ export function resumeGlobalAudio() {
 }
 
 // --- NATIVE TTS (FALLBACK) ---
-
 export const speak = (text: string, language: string, onEnd: () => void) => {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     onEnd();
@@ -266,9 +299,6 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   };
   
   const targetLang = langMap[language] || 'en-US';
-  
-  // Use a recursive function to play chunks sequentially
-  // This prevents Chrome from garbage collecting or skipping
   let currentChunkIndex = 0;
 
   const playNextChunk = () => {
@@ -283,7 +313,6 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
       utterance.rate = 0.9;
       utterance.pitch = 1.0;
 
-      // Try to find a good voice
       const voices = window.speechSynthesis.getVoices();
       const preferredVoice = 
         voices.find(v => v.lang === targetLang && (v.name.includes("Google") || v.name.includes("Enhanced"))) ||
@@ -297,12 +326,11 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
       };
       
       utterance.onerror = () => {
-          // Even on error, try next chunk
           currentChunkIndex++;
           playNextChunk();
       };
 
-      activeUtterances.push(utterance); // Keep ref
+      activeUtterances.push(utterance);
       window.speechSynthesis.speak(utterance);
   };
 

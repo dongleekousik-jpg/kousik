@@ -13,7 +13,7 @@ import {
   speak,
   startKeepAlive, 
   stopKeepAlive,
-  base64ToAudioBuffer // NEW IMPORT
+  base64ToAudioBuffer // UPDATED: Now Async
 } from '../utils/audio';
 
 interface PlacesSectionProps {
@@ -165,8 +165,8 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
           if (cachedBase64DB) {
               const ctx = getGlobalAudioContext();
-              // USE MANUAL DECODER
-              const audioBuffer = base64ToAudioBuffer(cachedBase64DB, ctx);
+              // Now await because base64ToAudioBuffer uses async decodeAudioData
+              const audioBuffer = await base64ToAudioBuffer(cachedBase64DB, ctx);
               audioCache[cacheKey] = audioBuffer;
               
               if (isMounted.current) {
@@ -211,8 +211,8 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               
               if (activeRequestId.current === requestId && isMounted.current) {
                    const ctx = getGlobalAudioContext();
-                   // CRITICAL: Use Manual Decoding to fix playback issues
-                   const audioBuffer = base64ToAudioBuffer(data.base64Audio, ctx);
+                   // Now await
+                   const audioBuffer = await base64ToAudioBuffer(data.base64Audio, ctx);
                    audioCache[cacheKey] = audioBuffer;
                    
                    playGlobalAudio(audioBuffer, () => {
