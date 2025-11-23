@@ -1,7 +1,4 @@
-
-
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Modality } from '@google/genai';
 import { useLanguage } from '../App';
 import { Place } from '../types';
 import { Icon } from '../constants/icons';
@@ -127,42 +124,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       setLoadingPlaceId(null);
   }, [language]);
 
-  // Preload audio from Persistent Storage (IndexedDB) to Memory Cache (RAM)
-  useEffect(() => {
-    if (!isSpiritual) return;
-
-    let isActive = true;
-
-    const preloadAudio = async () => {
-      const promises = places.map(async (place) => {
-        const cacheKey = `${language}-${place.id}`;
-        // If already in RAM, skip
-        if (audioCache[cacheKey]) return;
-
-        // Try load from DB
-        try {
-            const cachedBase64 = await getAudioFromDB(cacheKey);
-            if (cachedBase64 && isActive) {
-                const ctx = getGlobalAudioContext();
-                // Decode asynchronously
-                const audioBuffer = await decodeAudioData(decode(cachedBase64), ctx, 24000, 1);
-                // Store in RAM
-                audioCache[cacheKey] = audioBuffer;
-            }
-        } catch (e) {
-            // Silently fail preloading, will try again on click
-            console.debug("Preload failed for", place.id, e);
-        }
-      });
-      
-      await Promise.all(promises);
-    };
-    
-    preloadAudio();
-
-    return () => { isActive = false; };
-  }, [language, places, isSpiritual]);
-
   const handleToggleAudio = async (place: Place) => {
       // CRITICAL: Unlock audio context immediately on user interaction for mobile support
       unlockAudioContext();
@@ -220,60 +181,30 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               return;
           }
 
-          // 3. Generate from API (Slowest - Network)
+          // 3. Generate from API (Backend)
           const content = t.places[place.id as keyof typeof t.places];
           
-          // Safe extraction of content
           const name = (content.name || "").trim();
           const description = (content.description || "").trim();
           const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
           
-          // Ensure concise and clean text for TTS
           const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
 
-          if (!textToSpeak) {
-             throw new Error("No content to speak");
+          if (!textToSpeak) throw new Error("No content to speak");
+
+          // CALL BACKEND API
+          const response = await fetch('/api/generate-tts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: textToSpeak, language })
+          });
+
+          if (!response.ok) {
+              throw new Error('API request failed');
           }
 
-          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-          let response;
-          try {
-              response = await ai.models.generateContent({
-                  model: "gemini-2.5-flash-preview-tts",
-                  contents: [{ parts: [{ text: textToSpeak }] }],
-                  config: {
-                      responseModalities: [Modality.AUDIO],
-                      speechConfig: {
-                          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-                      },
-                  },
-              });
-          } catch (err) {
-             console.warn("Primary TTS request failed, attempting fallback", err);
-          }
-
-          let base64Audio = response?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          
-          // FALLBACK 1: If full text fails (e.g. safety filters), try just the name and simple text
-          if (!base64Audio) {
-              console.log("Retrying with simplified text...");
-              const simpleText = `${name}. Please visit this sacred place.`.replace(/["']/g, "").trim();
-              try {
-                const retryResponse = await ai.models.generateContent({
-                    model: "gemini-2.5-flash-preview-tts",
-                    contents: [{ parts: [{ text: simpleText }] }],
-                    config: {
-                        responseModalities: [Modality.AUDIO],
-                        speechConfig: {
-                            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-                        },
-                    },
-                });
-                base64Audio = retryResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-              } catch (retryErr) {
-                 console.error("Retry failed", retryErr);
-              }
-          }
+          const data = await response.json();
+          const base64Audio = data.base64Audio;
 
           if (base64Audio) {
               // Save to DB immediately
@@ -294,10 +225,10 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
                    setPlayingPlaceId(place.id);
               }
           } else {
-              throw new Error("No audio data received from API after retry");
+              throw new Error("No audio data received from API");
           }
       } catch (error) {
-          console.warn("Gemini TTS failed completely, falling back to native browser TTS", error);
+          console.warn("API TTS failed, falling back to native browser TTS", error);
           
           // FALLBACK 2: Native Browser TTS (Last Resort)
           if (activeRequestId.current === requestId && isMounted.current) {
