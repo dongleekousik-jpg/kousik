@@ -129,7 +129,7 @@ let globalSource: AudioBufferSourceNode | null = null;
 export const audioCache: Record<string, AudioBuffer> = {};
 
 // --- IndexedDB ---
-const DB_NAME = 'GovindaMitraAudioDB_v10';
+const DB_NAME = 'GovindaMitraAudioDB_v11';
 const STORE_NAME = 'audio_store';
 
 const openDB = (): Promise<IDBDatabase> => {
@@ -178,6 +178,7 @@ export const getAudioFromDB = async (key: string): Promise<string | null> => {
 
 export function getGlobalAudioContext(): AudioContext {
   if (!globalAudioContext) {
+    // DO NOT force sampleRate. Let the browser decide (fixes mobile playback).
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     globalAudioContext = new AudioContextClass();
   }
@@ -241,24 +242,65 @@ export function decode(base64: string): Uint8Array {
   }
 }
 
+/**
+ * Wraps raw PCM data in a valid WAV header.
+ * This ensures compatibility with standard browser decoders on Desktop and Mobile.
+ */
+function getPcmWavData(
+  pcmData: Uint8Array, 
+  sampleRate: number, 
+  numChannels: number, 
+  bitDepth: number
+): ArrayBuffer {
+  const headerLength = 44;
+  const dataLength = pcmData.byteLength;
+  const buffer = new ArrayBuffer(headerLength + dataLength);
+  const view = new DataView(buffer);
+
+  // RIFF chunk descriptor
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true); // File size - 8
+  writeString(view, 8, 'WAVE');
+
+  // fmt sub-chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true); // ByteRate
+  view.setUint16(32, numChannels * (bitDepth / 8), true); // BlockAlign
+  view.setUint16(34, bitDepth, true);
+
+  // data sub-chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  // Write PCM samples
+  const pcmBytes = new Uint8Array(buffer, headerLength);
+  pcmBytes.set(pcmData);
+
+  return buffer;
+}
+
+function writeString(view: DataView, offset: number, string: string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
 export async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
   sampleRate: number,
   numChannels: number,
 ): Promise<AudioBuffer> {
-  const length = Math.floor(data.byteLength / 2);
-  const dataInt16 = new Int16Array(data.buffer, data.byteOffset, length);
-  const frameCount = length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-    }
-  }
-  return buffer;
+  // Use the Robust WAV Header method.
+  // Gemini 2.5 Flash TTS returns 24kHz, 16-bit, Mono PCM.
+  const wavBuffer = getPcmWavData(data, 24000, 1, 16);
+  
+  // Use native browser decoding (handles resampling to Desktop 48kHz automatically)
+  return await ctx.decodeAudioData(wavBuffer);
 }
 
 export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {

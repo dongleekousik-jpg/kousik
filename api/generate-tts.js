@@ -78,8 +78,8 @@ export default async function handler(req, res) {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
             voiceConfig: {
-              // 'Puck' often sounds more natural/authoritative for a guide than 'Kore'
-              prebuiltVoiceConfig: { voiceName: 'Puck' },
+              // 'Kore' is typically more balanced and realistic for general use
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
             },
         },
         safetySettings: [
