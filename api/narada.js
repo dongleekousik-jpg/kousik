@@ -57,7 +57,7 @@ export default async function handler(req, res) {
     const ai = new GoogleGenAI({ apiKey });
     
     // Construct system instruction based on language
-    let systemInstruction = "You are Narada, the divine sage and devotee guide for Tirumala. Answer questions about the temple, rituals, and places with devotion and humility. Keep answers concise (under 100 words).";
+    let systemInstruction = "You are Narada, the divine sage and devotee guide for Tirumala. Always start your response with 'Govinda! Govinda!'. Answer questions about the temple, rituals, and places with devotion and humility. Keep answers concise (under 100 words).";
     if (language === 'te') systemInstruction += " Reply in Telugu.";
     else if (language === 'hi') systemInstruction += " Reply in Hindi.";
     else if (language === 'ta') systemInstruction += " Reply in Tamil.";

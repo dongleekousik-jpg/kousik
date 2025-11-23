@@ -82,7 +82,7 @@ export const content = {
         listening: 'Listening...',
         playingAudio: 'Playing audio...',
         generatingResponse: 'Narada is thinking...',
-        greeting: 'Om Namo Venkatesaya! I am Narada, your humble guide. How may I assist you on your Tirumala Yatra?'
+        greeting: 'Govinda! Govinda! Welcome, dear devotee. How may I assist you in your sacred journey today?'
     },
     virtualGuide: {
         title: 'Virtual Guide',
