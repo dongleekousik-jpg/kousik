@@ -136,7 +136,7 @@ let globalSource: AudioBufferSourceNode | null = null;
 export const audioCache: Record<string, AudioBuffer> = {};
 
 // --- IndexedDB ---
-const DB_NAME = 'GovindaMitraAudioDB_v11';
+const DB_NAME = 'GovindaMitraAudioDB_v12'; // Incremented version to clear old cache
 const STORE_NAME = 'audio_store';
 
 const openDB = (): Promise<IDBDatabase> => {
@@ -199,7 +199,7 @@ export function unlockAudioContext() {
     ctx.resume().catch(e => console.error("Ctx resume failed", e));
   }
   
-  // Play silent buffer to force unlock on iOS
+  // Play silent buffer to force unlock on iOS/Android
   try {
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
@@ -250,98 +250,60 @@ export function decode(base64: string): Uint8Array {
 }
 
 /**
- * Wraps raw PCM data in a valid WAV header.
- * This ensures compatibility with standard browser decoders on Desktop and Mobile.
+ * Manually decodes PCM data to AudioBuffer.
+ * This is more robust than WAV headers for Desktop browsers.
  */
-function getPcmWavData(
-  pcmData: Uint8Array, 
-  sampleRate: number, 
-  numChannels: number, 
-  bitDepth: number
-): ArrayBuffer {
-  const headerLength = 44;
-  const dataLength = pcmData.byteLength;
-  const buffer = new ArrayBuffer(headerLength + dataLength);
-  const view = new DataView(buffer);
-
-  // RIFF chunk descriptor
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + dataLength, true); // File size - 8
-  writeString(view, 8, 'WAVE');
-
-  // fmt sub-chunk
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
-  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true); // ByteRate
-  view.setUint16(32, numChannels * (bitDepth / 8), true); // BlockAlign
-  view.setUint16(34, bitDepth, true);
-
-  // data sub-chunk
-  writeString(view, 36, 'data');
-  view.setUint32(40, dataLength, true);
-
-  // Write PCM samples
-  const pcmBytes = new Uint8Array(buffer, headerLength);
-  pcmBytes.set(pcmData);
-
-  return buffer;
-}
-
-function writeString(view: DataView, offset: number, string: string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}
-
 export async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
+  sampleRate: number = 24000,
+  numChannels: number = 1,
 ): Promise<AudioBuffer> {
-  // Use the Robust WAV Header method.
-  // Gemini 2.5 Flash TTS returns 24kHz, 16-bit, Mono PCM.
-  const wavBuffer = getPcmWavData(data, 24000, 1, 16);
+  // Convert Int16 PCM to Float32
+  const numSamples = data.byteLength / 2; // 16-bit
+  const audioBuffer = ctx.createBuffer(numChannels, numSamples, sampleRate);
+  const channelData = audioBuffer.getChannelData(0);
+  const dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+  for (let i = 0; i < numSamples; i++) {
+     // Gemini output is Little Endian
+     const int16 = dataView.getInt16(i * 2, true);
+     // Normalize to [-1.0, 1.0]
+     channelData[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
+  }
   
-  // Use native browser decoding (handles resampling to Desktop 48kHz automatically)
-  return await ctx.decodeAudioData(wavBuffer);
+  return audioBuffer;
 }
 
 export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
   stopGlobalAudio(); 
   const ctx = getGlobalAudioContext();
   
-  // FORCE RESUME for reliability
+  // FORCE RESUME for reliability on Desktop
+  const play = () => {
+      try {
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(ctx.destination);
+          source.onended = () => {
+              if (onEnded) onEnded();
+          };
+          source.start(0);
+          globalSource = source;
+      } catch (e) {
+          console.error("Source start failed", e);
+          if(onEnded) onEnded();
+      }
+  };
+
   if (ctx.state === 'suspended') {
-      ctx.resume().then(() => {
-          startSource(ctx, buffer, onEnded);
-      }).catch(e => {
-          console.error("Failed to resume ctx before play", e);
-          // Try to play anyway
-          startSource(ctx, buffer, onEnded);
+      ctx.resume().then(play).catch(e => {
+          console.error("Resume failed", e);
+          play();
       });
   } else {
-      startSource(ctx, buffer, onEnded);
+      play();
   }
-}
-
-function startSource(ctx: AudioContext, buffer: AudioBuffer, onEnded?: () => void) {
-    try {
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        source.onended = () => {
-            if (onEnded) onEnded();
-        };
-        source.start(0);
-        globalSource = source;
-    } catch (e) {
-        console.error("Source start failed", e);
-        if(onEnded) onEnded();
-    }
 }
 
 export function stopGlobalAudio() {
@@ -375,3 +337,4 @@ export function resumeGlobalAudio() {
       window.speechSynthesis.resume();
   }
 }
+        
