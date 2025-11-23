@@ -67,31 +67,38 @@ export const getAudioFromDB = async (key: string): Promise<string | null> => {
 export function getGlobalAudioContext(): AudioContext {
   if (!globalAudioContext) {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    globalAudioContext = new AudioContextClass();
+    globalAudioContext = new AudioContextClass({ sampleRate: 24000 }); // Gemini TTS is 24kHz
   }
   return globalAudioContext;
 }
 
-// CRITICAL FOR MOBILE: Keeps the audio thread open while fetching data
+// CRITICAL FOR MOBILE: Keeps the audio thread open with "Near Silence"
+// We use a very faint noise instead of pure silence because some aggressive battery savers
+// stop the audio engine if it detects pure zeros.
 export function startKeepAlive() {
     const ctx = getGlobalAudioContext();
     
-    // Resume context if suspended (must be done in click handler)
     if (ctx.state === 'suspended') {
         ctx.resume().catch(e => console.error("Ctx resume failed", e));
     }
 
-    // Play a silent buffer in a loop to keep the hardware active
     try {
         if (keepAliveSource) {
             try { keepAliveSource.stop(); } catch(e){}
             keepAliveSource.disconnect();
         }
         
-        const buffer = ctx.createBuffer(1, 1, 22050); // Tiny buffer
+        // Create a buffer with tiny random noise (imperceptible but keeps hardware awake)
+        const bufferSize = 4096; 
+        const buffer = ctx.createBuffer(1, bufferSize, 24000);
+        const data = buffer.getChannelData(0);
+        for(let i=0; i<bufferSize; i++) {
+            data[i] = (Math.random() * 0.000001); // Near zero
+        }
+
         const source = ctx.createBufferSource();
         source.buffer = buffer;
-        source.loop = true; // Loop silence
+        source.loop = true; 
         source.connect(ctx.destination);
         source.start(0);
         keepAliveSource = source;
@@ -117,18 +124,10 @@ export function unlockAudioContext() {
 
 export const warmupTTS = () => {
     if (typeof window === 'undefined') return;
-    
-    // Unlock Web Audio
     unlockAudioContext();
-
-    // Unlock SpeechSynthesis (Native)
     if ('speechSynthesis' in window) {
         if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-        // Silent utterance to wake up the engine
-        const u = new SpeechSynthesisUtterance(" ");
-        u.volume = 0;
-        u.rate = 2; 
-        window.speechSynthesis.speak(u);
+        window.speechSynthesis.cancel(); 
     }
 }
 
@@ -136,66 +135,56 @@ export function initializeAudioUnlocker() {
     if (typeof window === 'undefined') return;
 
     if ('speechSynthesis' in window) {
-         window.speechSynthesis.onvoiceschanged = () => { /* Load triggers */ };
+         window.speechSynthesis.onvoiceschanged = () => { };
     }
 
     const unlock = () => {
         unlockAudioContext();
-        
         window.removeEventListener('touchstart', unlock);
         window.removeEventListener('click', unlock);
-        window.removeEventListener('keydown', unlock);
     };
 
     window.addEventListener('touchstart', unlock, { passive: true });
     window.addEventListener('click', unlock, { passive: true });
-    window.addEventListener('keydown', unlock, { passive: true });
 }
 
-export function decode(base64: string): Uint8Array {
-  try {
-    const cleanBase64 = base64.replace(/[\s\n\r]/g, '');
-    const binaryString = atob(cleanBase64);
+// --- MANUAL PCM DECODING ---
+// Gemini returns raw PCM 16-bit integers at 24kHz. 
+// Browser decodeAudioData() expects WAV headers, so it fails.
+// We must convert bytes -> Int16 -> Float32 manually.
+
+export function base64ToAudioBuffer(base64: string, ctx: AudioContext): AudioBuffer {
+    const binaryString = window.atob(base64.replace(/\s/g, ''));
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+        bytes[i] = binaryString.charCodeAt(i);
     }
-    return bytes;
-  } catch (e) {
-    console.error("Decode failed", e);
-    throw e;
-  }
-}
 
-export async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
-  // Mobile Safari sometimes needs a copy of the buffer
-  const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  
-  return new Promise((resolve, reject) => {
-      ctx.decodeAudioData(arrayBuffer, 
-          (buffer) => resolve(buffer),
-          (err) => reject(err)
-      );
-  });
+    // Convert to Int16
+    const int16Array = new Int16Array(bytes.buffer);
+    
+    // Create AudioBuffer (1 Channel, 24kHz)
+    const audioBuffer = ctx.createBuffer(1, int16Array.length, 24000);
+    const channelData = audioBuffer.getChannelData(0);
+
+    // Convert Int16 to Float32 (-1.0 to 1.0)
+    for (let i = 0; i < int16Array.length; i++) {
+        channelData[i] = int16Array[i] / 32768.0;
+    }
+
+    return audioBuffer;
 }
 
 export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
-  stopGlobalAudio(); // Stops previous playback AND KeepAlive
+  stopGlobalAudio(); 
   
   const ctx = getGlobalAudioContext();
   
-  // Ensure we are running
   if (ctx.state === 'suspended') {
       ctx.resume().then(() => {
           startSource(ctx, buffer, onEnded);
       }).catch(e => {
-          console.error("Failed to resume ctx before play", e);
           startSource(ctx, buffer, onEnded);
       });
   } else {
@@ -221,7 +210,7 @@ function startSource(ctx: AudioContext, buffer: AudioBuffer, onEnded?: () => voi
 
 export function stopGlobalAudio() {
   isStopped = true;
-  stopKeepAlive(); // Stop the silence loop
+  stopKeepAlive(); 
   stopNativeAudio();
 
   if (globalSource) {
@@ -245,8 +234,6 @@ export function resumeGlobalAudio() {
   if (globalAudioContext && globalAudioContext.state === 'suspended') {
     globalAudioContext.resume();
   }
-  // If resuming, we might need to restart keepAlive if nothing is playing? 
-  // Ideally, resume() handles the current active source.
 }
 
 // --- NATIVE TTS (FALLBACK) ---
@@ -279,44 +266,43 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   };
   
   const targetLang = langMap[language] || 'en-US';
-  const voices = window.speechSynthesis.getVoices();
   
-  // Prioritize "Google" or "Enhanced" voices for better quality
-  const preferredVoice = 
-      voices.find(v => v.lang === targetLang && (v.name.includes("Google") || v.name.includes("Enhanced"))) ||
-      voices.find(v => v.lang === targetLang) || 
-      voices.find(v => v.lang.startsWith(language));
-
-  let currentIndex = 0;
+  // Use a recursive function to play chunks sequentially
+  // This prevents Chrome from garbage collecting or skipping
+  let currentChunkIndex = 0;
 
   const playNextChunk = () => {
-      if (isStopped || currentIndex >= chunks.length) {
-          activeUtterances = [];
+      if (isStopped || currentChunkIndex >= chunks.length) {
           onEnd();
           return;
       }
 
-      const chunk = chunks[currentIndex];
+      const chunk = chunks[currentChunkIndex];
       const utterance = new SpeechSynthesisUtterance(chunk);
       utterance.lang = targetLang;
+      utterance.rate = 0.9;
+      utterance.pitch = 1.0;
+
+      // Try to find a good voice
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = 
+        voices.find(v => v.lang === targetLang && (v.name.includes("Google") || v.name.includes("Enhanced"))) ||
+        voices.find(v => v.lang === targetLang);
+      
       if (preferredVoice) utterance.voice = preferredVoice;
 
-      utterance.rate = 0.85; 
-      utterance.pitch = 1.0; 
-
       utterance.onend = () => {
-          activeUtterances = activeUtterances.filter(u => u !== utterance);
-          currentIndex++;
+          currentChunkIndex++;
           playNextChunk();
       };
-
+      
       utterance.onerror = () => {
-          activeUtterances = activeUtterances.filter(u => u !== utterance);
-          currentIndex++;
+          // Even on error, try next chunk
+          currentChunkIndex++;
           playNextChunk();
       };
 
-      activeUtterances.push(utterance);
+      activeUtterances.push(utterance); // Keep ref
       window.speechSynthesis.speak(utterance);
   };
 

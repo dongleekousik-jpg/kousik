@@ -1,9 +1,9 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { useLanguage } from '../App';
 import { 
-    decode, 
-    decodeAudioData, 
+    base64ToAudioBuffer, 
     audioCache, 
     playGlobalAudio, 
     stopGlobalAudio, 
@@ -69,7 +69,7 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
 
             if (isMounted.current) {
                 const ctx = getGlobalAudioContext();
-                const audioBuffer = await decodeAudioData(decode(data.base64Audio), ctx, 24000, 1);
+                const audioBuffer = base64ToAudioBuffer(data.base64Audio, ctx);
                 audioCache[cacheKey] = audioBuffer;
                 
                 playGlobalAudio(audioBuffer, () => {

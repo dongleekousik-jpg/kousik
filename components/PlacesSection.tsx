@@ -4,8 +4,6 @@ import { useLanguage } from '../App';
 import { Place } from '../types';
 import { Icon } from '../constants/icons';
 import { 
-  decode, 
-  decodeAudioData, 
   playGlobalAudio, 
   stopGlobalAudio, 
   getGlobalAudioContext, 
@@ -13,9 +11,9 @@ import {
   getAudioFromDB,
   saveAudioToDB,
   speak,
-  startKeepAlive, // NEW
-  stopKeepAlive,  // NEW
-  warmupTTS
+  startKeepAlive, 
+  stopKeepAlive,
+  base64ToAudioBuffer // NEW IMPORT
 } from '../utils/audio';
 
 interface PlacesSectionProps {
@@ -134,7 +132,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       }
 
       stopGlobalAudio();
-      // Restart keep alive because stopGlobalAudio stops it
       startKeepAlive();
       
       setPlayingPlaceId(null);
@@ -168,7 +165,8 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
           if (cachedBase64DB) {
               const ctx = getGlobalAudioContext();
-              const audioBuffer = await decodeAudioData(decode(cachedBase64DB), ctx, 24000, 1);
+              // USE MANUAL DECODER
+              const audioBuffer = base64ToAudioBuffer(cachedBase64DB, ctx);
               audioCache[cacheKey] = audioBuffer;
               
               if (isMounted.current) {
@@ -193,7 +191,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
                   });
                   const contentType = response.headers.get("content-type");
                   if (!response.ok || !contentType || !contentType.includes("application/json")) {
-                      throw new Error("API Error");
+                      throw new Error("API Unavailable");
                   }
                   return await response.json();
               } catch (e) {
@@ -213,7 +211,8 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               
               if (activeRequestId.current === requestId && isMounted.current) {
                    const ctx = getGlobalAudioContext();
-                   const audioBuffer = await decodeAudioData(decode(data.base64Audio), ctx, 24000, 1);
+                   // CRITICAL: Use Manual Decoding to fix playback issues
+                   const audioBuffer = base64ToAudioBuffer(data.base64Audio, ctx);
                    audioCache[cacheKey] = audioBuffer;
                    
                    playGlobalAudio(audioBuffer, () => {

@@ -53,18 +53,17 @@ export default async function handler(req, res) {
   }
 
   // Optimize text length for mobile network latency
-  // Shorter text = faster response = less likely to timeout on mobile
-  if (text.length > 350) {
+  if (text.length > 300) {
       const parts = text.split('.');
       let truncated = "";
       for (const part of parts) {
-          if ((truncated.length + part.length) < 350) {
+          if ((truncated.length + part.length) < 300) {
               truncated += part + ".";
           } else {
               break;
           }
       }
-      text = truncated || text.substring(0, 350); 
+      text = truncated || text.substring(0, 300); 
   }
 
   try {
@@ -77,16 +76,10 @@ export default async function handler(req, res) {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
             voiceConfig: {
-              // Puck is deep, authoritative, and clear - ideal for mobile speakers
-              prebuiltVoiceConfig: { voiceName: 'Puck' },
+              // Kore is widely considered the most "human-like" and realistic
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
             },
         },
-        safetySettings: [
-            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-        ],
       },
     });
 
