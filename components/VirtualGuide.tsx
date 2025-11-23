@@ -10,7 +10,8 @@ import {
     pauseGlobalAudio, 
     resumeGlobalAudio, 
     getGlobalAudioContext,
-    speak 
+    speak,
+    prepareAudioContext
 } from '../utils/audio';
 import { Icon } from '../constants/icons';
 
@@ -92,6 +93,9 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
   };
 
   const handlePlay = (autoPlay = false) => {
+    // CRITICAL FOR MOBILE: Warm up audio engine on user interaction
+    if (!autoPlay) prepareAudioContext();
+
     if (status === 'paused') {
         resumeGlobalAudio();
         setStatus('playing');

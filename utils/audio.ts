@@ -1,4 +1,5 @@
 
+
 export const stopNativeAudio = () => {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     window.speechSynthesis.cancel();
@@ -15,62 +16,77 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
     return;
   }
 
-  // Cancel any ongoing speech immediately
+  // Cancel any ongoing speech
   stopGlobalAudio();
   window.speechSynthesis.cancel();
 
-  // Create utterance
-  const utterance = new SpeechSynthesisUtterance(text);
-  currentUtterance = utterance; // Keep reference!
+  const playUtterance = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const utterance = new SpeechSynthesisUtterance(text);
+      currentUtterance = utterance; // Keep reference to prevent GC
 
-  // Robust Voice Selection
+      // Robust Voice Selection
+      let selectedVoice = null;
+      if (language === 'te') {
+          selectedVoice = voices.find(v => v.lang.includes('te') && v.name.includes('Google')) || voices.find(v => v.lang.includes('te'));
+      } else if (language === 'hi') {
+          selectedVoice = voices.find(v => v.lang.includes('hi') && v.name.includes('Google')) || voices.find(v => v.lang.includes('hi'));
+      } else if (language === 'ta') {
+          selectedVoice = voices.find(v => v.lang.includes('ta') && v.name.includes('Google')) || voices.find(v => v.lang.includes('ta'));
+      } else if (language === 'kn') {
+          selectedVoice = voices.find(v => v.lang.includes('kn') && v.name.includes('Google')) || voices.find(v => v.lang.includes('kn'));
+      } else {
+          selectedVoice = voices.find(v => v.lang === 'en-IN') || 
+                          voices.find(v => v.name.includes('Google US English')) ||
+                          voices.find(v => v.lang.includes('en'));
+      }
+
+      if (selectedVoice) {
+          utterance.voice = selectedVoice;
+      }
+
+      utterance.rate = 0.85; // Slightly slower for clarity
+      utterance.pitch = 1.0;
+
+      utterance.onend = () => {
+        currentUtterance = null;
+        onEnd();
+      };
+
+      utterance.onerror = (e) => {
+        console.error('TTS Error:', e);
+        currentUtterance = null;
+        onEnd();
+      };
+
+      window.speechSynthesis.speak(utterance);
+  };
+
+  // ROBUST VOICE LOADING:
+  // Chrome sometimes loads voices asynchronously. We try to play immediately.
+  // If voices are empty, we wait for 'onvoiceschanged'.
+  // BUT: We also set a safety timeout (1s). If event never fires, we play anyway (default voice).
   const voices = window.speechSynthesis.getVoices();
-  
-  // Try to find a "Google" voice or a high-quality regional voice
-  // These often sound less robotic than the default OS voice
-  let selectedVoice = null;
-  
-  if (language === 'te') {
-      selectedVoice = voices.find(v => v.lang.includes('te') && v.name.includes('Google')) || voices.find(v => v.lang.includes('te'));
-  } else if (language === 'hi') {
-      selectedVoice = voices.find(v => v.lang.includes('hi') && v.name.includes('Google')) || voices.find(v => v.lang.includes('hi'));
-  } else if (language === 'ta') {
-      selectedVoice = voices.find(v => v.lang.includes('ta') && v.name.includes('Google')) || voices.find(v => v.lang.includes('ta'));
-  } else if (language === 'kn') {
-      selectedVoice = voices.find(v => v.lang.includes('kn') && v.name.includes('Google')) || voices.find(v => v.lang.includes('kn'));
+  if (voices.length > 0) {
+      playUtterance();
   } else {
-      // For English, prefer Indian English, then Google US English (usually high quality)
-      selectedVoice = voices.find(v => v.lang === 'en-IN') || 
-                      voices.find(v => v.name.includes('Google US English')) ||
-                      voices.find(v => v.lang.includes('en'));
+      let hasExecuted = false;
+      const safePlay = () => {
+          if (hasExecuted) return;
+          hasExecuted = true;
+          window.speechSynthesis.onvoiceschanged = null; // Clean up
+          playUtterance();
+      };
+
+      // Listener for when voices are ready
+      window.speechSynthesis.onvoiceschanged = safePlay;
+
+      // Safety timeout: If voices take too long (or event missed), force play with default voice
+      setTimeout(safePlay, 1000);
   }
-
-  if (selectedVoice) {
-      utterance.voice = selectedVoice;
-  }
-
-  // Rate/Pitch adjustment for better "Narada" feel
-  utterance.rate = 0.9; 
-  utterance.pitch = 1.0; 
-
-  utterance.onend = () => {
-    currentUtterance = null;
-    onEnd();
-  };
-
-  utterance.onerror = (e) => {
-    console.error('TTS Error:', e);
-    currentUtterance = null;
-    onEnd();
-  };
-
-  // Chrome quirk: speak needs to be called slightly async sometimes to ensure voices are ready
-  setTimeout(() => {
-     window.speechSynthesis.speak(utterance);
-  }, 10);
 };
 
-// Web Audio API implementation for Gemini TTS
+// Web Audio API implementation
 
 let globalAudioContext: AudioContext | null = null;
 let globalSource: AudioBufferSourceNode | null = null;
@@ -78,8 +94,7 @@ let globalSource: AudioBufferSourceNode | null = null;
 export const audioCache: Record<string, AudioBuffer> = {};
 
 // --- IndexedDB for Persistent Caching ---
-// Bumped version to v10 to invalidate old caches
-const DB_NAME = 'GovindaMitraAudioDB_v10';
+const DB_NAME = 'GovindaMitraAudioDB_v11'; // Increment version to clear old cache
 const DB_VERSION = 1;
 const STORE_NAME = 'audio_store';
 
@@ -138,13 +153,16 @@ export function getGlobalAudioContext(): AudioContext {
   return globalAudioContext;
 }
 
-// Critical for mobile: Unlock audio context on user interaction
-export function unlockAudioContext() {
+// CRITICAL FOR MOBILE: This must be called inside a synchronous click handler
+export function prepareAudioContext() {
   const ctx = getGlobalAudioContext();
+  
+  // 1. Resume if suspended
   if (ctx.state === 'suspended') {
     ctx.resume().catch(e => console.error("Failed to resume audio context", e));
   }
-  // Play silent buffer to unlock iOS/Safari
+
+  // 2. Play a tiny silent buffer to unlock the audio engine on iOS/Android
   try {
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
@@ -158,7 +176,6 @@ export function unlockAudioContext() {
 
 export function decode(base64: string): Uint8Array {
   try {
-    // Ensure base64 string is clean
     const cleanBase64 = base64.replace(/[\s\n\r]/g, '');
     const binaryString = atob(cleanBase64);
     const len = binaryString.length;
@@ -171,15 +188,6 @@ export function decode(base64: string): Uint8Array {
     console.error("Failed to decode base64 string", e);
     throw e;
   }
-}
-
-export function encode(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
 
 export async function decodeAudioData(
@@ -206,6 +214,7 @@ export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
   stopGlobalAudio(); // Stop any existing audio
   const ctx = getGlobalAudioContext();
   
+  // Double check state
   if (ctx.state === 'suspended') {
       ctx.resume().catch(e => console.error("Failed to resume audio context", e));
   }
@@ -221,6 +230,7 @@ export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
 }
 
 export function stopGlobalAudio() {
+  // Stop Web Audio
   if (globalSource) {
     globalSource.onended = null;
     try {
@@ -231,6 +241,7 @@ export function stopGlobalAudio() {
     globalSource.disconnect();
     globalSource = null;
   }
+  // Stop Native TTS
   stopNativeAudio();
 }
 

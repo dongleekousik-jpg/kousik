@@ -13,7 +13,7 @@ import {
   getAudioFromDB,
   saveAudioToDB,
   speak,
-  unlockAudioContext
+  prepareAudioContext
 } from '../utils/audio';
 
 interface PlacesSectionProps {
@@ -126,8 +126,9 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // CRITICAL: Unlock audio context immediately on user interaction
-      unlockAudioContext();
+      // CRITICAL FOR MOBILE: This MUST be the first line in the click handler.
+      // It warms up the audio context while waiting for the fetch.
+      prepareAudioContext();
       
       // If clicking the same playing place, stop it.
       if (playingPlaceId === place.id) {
