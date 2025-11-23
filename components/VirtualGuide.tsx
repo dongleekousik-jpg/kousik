@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { useLanguage } from '../App';
 import { 
@@ -43,37 +44,38 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
         setLoading(true);
         const textToSpeak = `${placeContent.name}. ${placeContent.importance}`.trim();
 
-        const response = await fetch('/api/generate-tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: textToSpeak, language })
-        });
+        // Try Backend API
+        try {
+            const response = await fetch('/api/generate-tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: textToSpeak, language })
+            });
 
-        if (!response.ok) throw new Error("API Failed");
+            // CRITICAL: Detect if we got HTML (404/fallback) instead of JSON
+            const contentType = response.headers.get("content-type");
+            if (!response.ok || !contentType || !contentType.includes("application/json")) {
+                throw new Error("API Unavailable");
+            }
 
-        const data = await response.json();
-        const base64Audio = data.base64Audio;
+            const data = await response.json();
+            if (!data.base64Audio) throw new Error("No audio data");
 
-        if (base64Audio && isMounted.current) {
-            const ctx = getGlobalAudioContext();
-            const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-            
-            // Save to cache
-            audioCache[cacheKey] = audioBuffer;
-            
-            // Play only if still mounted
             if (isMounted.current) {
+                const ctx = getGlobalAudioContext();
+                const audioBuffer = await decodeAudioData(decode(data.base64Audio), ctx, 24000, 1);
+                audioCache[cacheKey] = audioBuffer;
+                
                 playGlobalAudio(audioBuffer, () => {
                     if (isMounted.current) setStatus('stopped');
                 });
                 setStatus('playing');
             }
-        } else {
-            throw new Error("No audio generated");
+        } catch (apiError) {
+             console.warn("Backend TTS failed, switching to native TTS", apiError);
+             throw apiError; // Re-throw to trigger fallback catch block
         }
     } catch (error) {
-        console.warn("Backend TTS failed, switching to native TTS", error);
-        
         // FALLBACK: Native TTS
         if (isMounted.current) {
             const textToSpeak = `${placeContent.name}. ${placeContent.importance}`.trim();
@@ -84,7 +86,6 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
         } else {
             setStatus('stopped');
         }
-
     } finally {
         if (isMounted.current) setLoading(false);
     }

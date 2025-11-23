@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { useLanguage } from '../App';
 import { Place } from '../types';
@@ -125,7 +126,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // CRITICAL: Unlock audio context immediately on user interaction for mobile support
+      // CRITICAL: Unlock audio context immediately on user interaction
       unlockAudioContext();
       
       // If clicking the same playing place, stop it.
@@ -135,17 +136,15 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
           return;
       }
 
-      // Stop any currently playing audio immediately
       stopGlobalAudio();
       setPlayingPlaceId(null);
 
-      // Generate a unique ID for this specific request
       const requestId = `${Date.now()}-${place.id}`;
       activeRequestId.current = requestId;
 
       const cacheKey = `${language}-${place.id}`;
 
-      // 1. Check In-Memory Cache (Fastest - RAM)
+      // 1. Check Memory Cache
       if (audioCache[cacheKey]) {
            playGlobalAudio(audioCache[cacheKey], () => {
                if(isMounted.current) setPlayingPlaceId(null);
@@ -154,21 +153,16 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
            return;
       }
 
-      // Start Loading UI
       setLoadingPlaceId(place.id);
       
       try {
-          // 2. Check Persistent Cache (IndexedDB - Disk)
+          // 2. Check Persistent DB Cache
           const cachedBase64DB = await getAudioFromDB(cacheKey);
-
-          // If the user cancelled this request while we were reading DB, abort
           if (activeRequestId.current !== requestId) return;
 
           if (cachedBase64DB) {
               const ctx = getGlobalAudioContext();
               const audioBuffer = await decodeAudioData(decode(cachedBase64DB), ctx, 24000, 1);
-              
-              // Promote to Memory Cache
               audioCache[cacheKey] = audioBuffer;
               
               if (isMounted.current) {
@@ -181,71 +175,59 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               return;
           }
 
-          // 3. Generate from API (Backend)
+          // 3. Prepare Text
           const content = t.places[place.id as keyof typeof t.places];
-          
           const name = (content.name || "").trim();
           const description = (content.description || "").trim();
           const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
-          
           const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
 
-          if (!textToSpeak) throw new Error("No content to speak");
+          if (!textToSpeak) throw new Error("No content");
 
-          // CALL BACKEND API
-          const response = await fetch('/api/generate-tts', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ text: textToSpeak, language })
-          });
+          // 4. Try Backend API
+          try {
+              const response = await fetch('/api/generate-tts', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: textToSpeak, language })
+              });
 
-          if (!response.ok) {
-              throw new Error('API request failed');
-          }
+              // CRITICAL CHECK: In Preview/Local, fetch often returns HTML (index.html) instead of 404
+              const contentType = response.headers.get("content-type");
+              if (!response.ok || !contentType || !contentType.includes("application/json")) {
+                  throw new Error("API not available or returned HTML");
+              }
 
-          const data = await response.json();
-          const base64Audio = data.base64Audio;
+              const data = await response.json();
+              if (!data.base64Audio) throw new Error("No audio data");
 
-          if (base64Audio) {
-              // Save to DB immediately
-              saveAudioToDB(cacheKey, base64Audio);
+              saveAudioToDB(cacheKey, data.base64Audio);
               
-              // Only play if this is still the active request
               if (activeRequestId.current === requestId && isMounted.current) {
                    const ctx = getGlobalAudioContext();
-                   const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-                   
-                   // Update Memory Cache
+                   const audioBuffer = await decodeAudioData(decode(data.base64Audio), ctx, 24000, 1);
                    audioCache[cacheKey] = audioBuffer;
                    
-                   // Play
                    playGlobalAudio(audioBuffer, () => {
                        if(isMounted.current) setPlayingPlaceId(null);
                    });
                    setPlayingPlaceId(place.id);
               }
-          } else {
-              throw new Error("No audio data received from API");
+          } catch (apiError) {
+              // 5. Fallback to Native TTS
+              console.warn("API TTS failed, using native fallback", apiError);
+              
+              if (activeRequestId.current === requestId && isMounted.current) {
+                  speak(textToSpeak, language, () => {
+                      if(isMounted.current) setPlayingPlaceId(null);
+                  });
+                  setPlayingPlaceId(place.id);
+              }
           }
+
       } catch (error) {
-          console.warn("API TTS failed, falling back to native browser TTS", error);
-          
-          // FALLBACK 2: Native Browser TTS (Last Resort)
-          if (activeRequestId.current === requestId && isMounted.current) {
-              const content = t.places[place.id as keyof typeof t.places];
-              const name = content.name;
-              const description = content.description;
-              const importance = 'importance' in content ? (content as any).importance : "";
-              const textToSpeak = `${name}. ${description} ${importance}`;
-
-              speak(textToSpeak, language, () => {
-                  if(isMounted.current) setPlayingPlaceId(null);
-              });
-              setPlayingPlaceId(place.id);
-          }
-
+          console.error("Audio playback failed completely", error);
       } finally {
-          // Only clear loading if this is still the active request
           if (isMounted.current && activeRequestId.current === requestId) {
               setLoadingPlaceId(null);
           }

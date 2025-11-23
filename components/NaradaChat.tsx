@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { useLanguage } from '../App';
 import { ChatMessage } from '../types';
@@ -38,7 +39,7 @@ const NaradaChat: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // Call the Vercel Serverless Function
+      // Call the Backend API
       const response = await fetch('/api/narada', {
         method: 'POST',
         headers: {
@@ -50,9 +51,10 @@ const NaradaChat: React.FC = () => {
         }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'API Error');
+      // Check for API Failure OR HTML response (common in local preview)
+      const contentType = response.headers.get("content-type");
+      if (!response.ok || !contentType || !contentType.includes("application/json")) {
+          throw new Error("API not available (Offline Mode)");
       }
 
       const data = await response.json();
@@ -62,16 +64,25 @@ const NaradaChat: React.FC = () => {
         sender: 'narada',
         text: data.text,
         mapLink: data.mapLink,
-        // Sources removed as requested
       };
       setMessages((prev) => [...prev, naradaMessage]);
 
     } catch (error) {
-      console.error('Chat Error:', error);
+      console.warn('Chat API failed, using offline fallback', error);
+      
+      // OFFLINE FALLBACK - Keep the app "working" in preview
+      const offlineResponses = [
+          "Govinda! I am having trouble connecting to the cloud right now. However, remember that faith is the strongest connection.",
+          "Om Namo Venkatesaya. Please try again when the temple servers (backend) are fully reachable.",
+          "May Lord Balaji bless you. I am currently operating in offline mode."
+      ];
+      
+      const randomResponse = offlineResponses[Math.floor(Math.random() * offlineResponses.length)];
+
       const errorMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: 'narada',
-        text: 'My apologies, devotee. I cannot reach the divine knowledge right now. Please ensure the API Key is set in Vercel Settings and Redeploy.',
+        text: randomResponse + " (Check Vercel Deployment for full AI features)",
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
