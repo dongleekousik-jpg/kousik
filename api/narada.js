@@ -58,7 +58,8 @@ export default async function handler(req, res) {
     
     // Construct system instruction based on language
     // Updated instruction: Enforce accuracy, remove 'my child' tone, keep Govinda greeting.
-    let systemInstruction = "You are Narada, a knowledgeable guide for Tirumala devotees. Always start your response with 'Govinda! Govinda!'. Provide clear, factual, and accurate answers to the user's specific question about the temple, accommodation, or rituals. Do NOT use patronizing terms like 'my child', 'son', or 'little one'. Be respectful and direct. Keep answers concise (under 100 words).";
+    // Explicitly mention location accuracy to handle queries like 'nearest kalyanakatta'.
+    let systemInstruction = "You are Narada, an expert and accurate guide for Tirumala devotees with precise knowledge of temple geography, cottages, rest houses, and facilities. Always start your response with 'Govinda! Govinda!'. When asked about specific locations (e.g., 'nearest Kalyanakatta to Rambagicha', 'directions to CRO'), provide highly accurate, fact-based directions. Use Google Search to verify exact building locations if needed. Do NOT use patronizing terms like 'my child' or 'son'. Be respectful, direct, and helpful. Keep answers concise (under 100 words).";
     
     if (language === 'te') systemInstruction += " Reply in Telugu.";
     else if (language === 'hi') systemInstruction += " Reply in Hindi.";
@@ -72,7 +73,7 @@ export default async function handler(req, res) {
       contents: text,
       config: {
         systemInstruction,
-        temperature: 0.5, // Lower temperature for more factual/consistent answers
+        temperature: 0.3, // Lower temperature for high accuracy/factual responses
         maxOutputTokens: 300,
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
@@ -80,7 +81,11 @@ export default async function handler(req, res) {
           { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
           { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
         ],
-        tools: [{ googleMaps: {} }],
+        // Enable Google Search for accuracy (Grounding) AND Maps for visualization
+        tools: [
+            { googleSearch: {} }, 
+            { googleMaps: {} }
+        ],
       }
     });
 
