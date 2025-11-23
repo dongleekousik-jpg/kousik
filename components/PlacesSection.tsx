@@ -39,7 +39,6 @@ const PlaceCard: React.FC<PlaceCardProps> = ({ place, isSpiritual, isPlaying, is
     window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.mapQuery)}`, '_blank');
   };
 
-  // Get importance text safely
   const importance = 'importance' in placeContent ? (placeContent as any).importance : null;
   
   return (
@@ -65,7 +64,6 @@ const PlaceCard: React.FC<PlaceCardProps> = ({ place, isSpiritual, isPlaying, is
       </div>
       
       <div className="bg-gray-50/80 p-4 border-t border-gray-100 flex flex-col gap-3">
-        {/* Audio Player for Spiritual Places */}
         {isSpiritual && (
             <button 
                 onClick={(e) => {
@@ -110,7 +108,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   const [playingPlaceId, setPlayingPlaceId] = useState<string | null>(null);
   const [loadingPlaceId, setLoadingPlaceId] = useState<string | null>(null);
   
-  // Refs to track mounted state and active request to avoid race conditions
   const isMounted = useRef(true);
   const activeRequestId = useRef<string | null>(null);
 
@@ -119,7 +116,6 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       return () => { isMounted.current = false; stopGlobalAudio(); };
   }, []);
 
-  // Stop audio if language changes
   useEffect(() => {
       stopGlobalAudio();
       setPlayingPlaceId(null);
@@ -127,12 +123,10 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // CRITICAL: Unlock audio contexts immediately on user interaction
-      // This prevents mobile browsers from blocking the async play() call later
+      // 1. Immediate Unlock to prevent mobile blocking
       unlockAudioContext();
-      warmupTTS(); // Unlocks SpeechSynthesis on iOS/Android
+      warmupTTS(); 
       
-      // If clicking the same playing place, stop it.
       if (playingPlaceId === place.id) {
           stopGlobalAudio();
           setPlayingPlaceId(null);
@@ -145,17 +139,15 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       const requestId = `${Date.now()}-${place.id}`;
       activeRequestId.current = requestId;
 
-      // Prepare Text
       const content = t.places[place.id as keyof typeof t.places];
       const name = (content.name || "").trim();
       const description = (content.description || "").trim();
       const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
-      // Remove quotes to prevent TTS weirdness
       const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
       
       const cacheKey = `${language}-${place.id}`;
 
-      // 1. Check Memory Cache
+      // Check RAM Cache
       if (audioCache[cacheKey]) {
            playGlobalAudio(audioCache[cacheKey], () => {
                if(isMounted.current) setPlayingPlaceId(null);
@@ -167,7 +159,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       setLoadingPlaceId(place.id);
       
       try {
-          // 2. Check Persistent DB Cache
+          // Check DB Cache
           const cachedBase64DB = await getAudioFromDB(cacheKey);
           if (activeRequestId.current !== requestId) return;
 
@@ -188,22 +180,31 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
           if (!textToSpeak) throw new Error("No content");
 
-          // 3. Try Backend API (High Quality AI Voice)
-          try {
-              const response = await fetch('/api/generate-tts', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ text: textToSpeak, language })
-              });
-
-              // CRITICAL CHECK: In Preview/Local, fetch often returns HTML (index.html) instead of 404
-              const contentType = response.headers.get("content-type");
-              if (!response.ok || !contentType || !contentType.includes("application/json")) {
-                  throw new Error("API not available or returned HTML");
+          // API Call with Retry Logic
+          const fetchTTS = async (retries = 1): Promise<any> => {
+              try {
+                  const response = await fetch('/api/generate-tts', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ text: textToSpeak, language })
+                  });
+                  const contentType = response.headers.get("content-type");
+                  if (!response.ok || !contentType || !contentType.includes("application/json")) {
+                      throw new Error("API Error");
+                  }
+                  return await response.json();
+              } catch (e) {
+                  if (retries > 0) {
+                      console.log("Retrying TTS API...");
+                      return fetchTTS(retries - 1);
+                  }
+                  throw e;
               }
+          };
 
-              const data = await response.json();
-              if (!data.base64Audio) throw new Error("No audio data");
+          try {
+              const data = await fetchTTS();
+              if (!data.base64Audio) throw new Error("No audio");
 
               saveAudioToDB(cacheKey, data.base64Audio);
               
@@ -218,8 +219,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
                    setPlayingPlaceId(place.id);
               }
           } catch (apiError) {
-              // 4. Fallback to Native TTS
-              console.warn("API TTS failed, using native fallback", apiError);
+              console.warn("Using Native Fallback", apiError);
               
               if (activeRequestId.current === requestId && isMounted.current) {
                   speak(textToSpeak, language, () => {
@@ -230,7 +230,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
           }
 
       } catch (error) {
-          console.error("Audio playback failed completely", error);
+          console.error("Playback failed", error);
       } finally {
           if (isMounted.current && activeRequestId.current === requestId) {
               setLoadingPlaceId(null);

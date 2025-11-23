@@ -6,8 +6,6 @@ export const stopNativeAudio = () => {
 };
 
 // --- GLOBAL STATE ---
-// We must keep references to active utterances to prevent Garbage Collection
-// which causes audio to stop abruptly on Chrome/Android.
 let activeUtterances: SpeechSynthesisUtterance[] = [];
 let isStopped = false;
 
@@ -19,18 +17,21 @@ const preloadVoices = () => {
 };
 
 // Mobile Safari/Chrome require a direct user interaction to "unlock" the synth.
-// Call this immediately on button click, before any async/fetch operations.
 export const warmupTTS = () => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (typeof window === 'undefined') return;
     
-    // Resume if suspended
-    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    // 1. Unlock Web Audio API
+    unlockAudioContext();
 
-    // Create a silent, tiny utterance to 'grab' the audio focus
-    const u = new SpeechSynthesisUtterance(" ");
-    u.volume = 0;
-    u.rate = 10;
-    window.speechSynthesis.speak(u);
+    // 2. Unlock SpeechSynthesis
+    if ('speechSynthesis' in window) {
+        if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+        // Create a silent, tiny utterance to 'grab' the audio focus
+        const u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        u.rate = 2; // Fast
+        window.speechSynthesis.speak(u);
+    }
 }
 
 export const speak = (text: string, language: string, onEnd: () => void) => {
@@ -40,19 +41,18 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
     return;
   }
 
-  // Mobile Fix: explicitly resume synthesis
+  // Explicitly resume synthesis for mobile
   if (window.speechSynthesis.paused) {
       window.speechSynthesis.resume();
   }
   
-  // Cancel any ongoing speech and reset state
+  // Reset state
   stopGlobalAudio();
   window.speechSynthesis.cancel();
   activeUtterances = [];
   isStopped = false;
 
   // --- CHUNKING STRATEGY ---
-  // Split by sentence boundaries. This is crucial for long text on Android.
   const rawChunks = text.match(/[^.!?]+[.!?]+|[^\s]+(?=\s|$)/g) || [text];
   const chunks = rawChunks.map(c => c.trim()).filter(c => c.length > 0);
 
@@ -61,7 +61,7 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
       return;
   }
 
-  // --- LANGUAGE SETUP ---
+  // --- SMART VOICE SELECTION ---
   const langMap: Record<string, string> = {
       'en': 'en-US',
       'te': 'te-IN',
@@ -72,19 +72,19 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   
   const targetLang = langMap[language] || 'en-US';
   
-  // Attempt to find voice
   const voices = window.speechSynthesis.getVoices();
-  const matchingVoice = voices.find(v => v.lang === targetLang) || 
-                        voices.find(v => v.lang.replace('_', '-').toLowerCase() === targetLang.toLowerCase()) ||
-                        voices.find(v => v.lang.startsWith(language));
+  
+  // Prioritize "Google" or "Enhanced" voices for better quality on Android/iOS
+  const preferredVoice = 
+      voices.find(v => v.lang === targetLang && (v.name.includes("Google") || v.name.includes("Enhanced") || v.name.includes("Premium"))) ||
+      voices.find(v => v.lang === targetLang) || 
+      voices.find(v => v.lang.startsWith(language));
 
-  // --- SEQUENTIAL PLAYBACK ---
-  // We play chunks one by one. This is safer than queuing them all at once.
   let currentIndex = 0;
 
   const playNextChunk = () => {
       if (isStopped || currentIndex >= chunks.length) {
-          activeUtterances = []; // Clean up
+          activeUtterances = [];
           onEnd();
           return;
       }
@@ -93,16 +93,15 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
       const utterance = new SpeechSynthesisUtterance(chunk);
       utterance.lang = targetLang;
       
-      if (matchingVoice) {
-          utterance.voice = matchingVoice;
+      if (preferredVoice) {
+          utterance.voice = preferredVoice;
       }
 
       // Tuning for better sound
-      utterance.rate = 0.9; 
+      utterance.rate = 0.85; // Slightly slower is more intelligible
       utterance.pitch = 1.0; 
 
       utterance.onend = () => {
-          // Remove this utterance from active list to allow GC
           activeUtterances = activeUtterances.filter(u => u !== utterance);
           currentIndex++;
           playNextChunk();
@@ -112,10 +111,9 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
           console.warn('TTS Error:', e);
           activeUtterances = activeUtterances.filter(u => u !== utterance);
           currentIndex++;
-          playNextChunk(); // Try next chunk even if one fails
+          playNextChunk();
       };
 
-      // Store ref to prevent GC
       activeUtterances.push(utterance);
       window.speechSynthesis.speak(utterance);
   };
@@ -123,16 +121,15 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   playNextChunk();
 };
 
-// Web Audio API implementation for Gemini TTS
+// --- Web Audio API (High Quality) ---
 
 let globalAudioContext: AudioContext | null = null;
 let globalSource: AudioBufferSourceNode | null = null;
 
 export const audioCache: Record<string, AudioBuffer> = {};
 
-// --- IndexedDB for Persistent Caching ---
+// --- IndexedDB ---
 const DB_NAME = 'GovindaMitraAudioDB_v10';
-const DB_VERSION = 1;
 const STORE_NAME = 'audio_store';
 
 const openDB = (): Promise<IDBDatabase> => {
@@ -141,7 +138,7 @@ const openDB = (): Promise<IDBDatabase> => {
         reject('IndexedDB not supported');
         return;
     }
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -175,12 +172,9 @@ export const getAudioFromDB = async (key: string): Promise<string | null> => {
       request.onerror = () => resolve(null);
     });
   } catch (e) {
-    console.warn('Failed to read audio from DB', e);
     return null;
   }
 };
-
-// ----------------------------------------
 
 export function getGlobalAudioContext(): AudioContext {
   if (!globalAudioContext) {
@@ -190,15 +184,14 @@ export function getGlobalAudioContext(): AudioContext {
   return globalAudioContext;
 }
 
-// Critical for mobile: Unlock audio context on user interaction
 export function unlockAudioContext() {
   const ctx = getGlobalAudioContext();
   
   if (ctx.state === 'suspended') {
-    ctx.resume().catch(e => console.error("Failed to resume audio context", e));
+    ctx.resume().catch(e => console.error("Ctx resume failed", e));
   }
   
-  // Play silent buffer to unlock iOS/Safari WebAudio
+  // Play silent buffer to force unlock on iOS
   try {
     const buffer = ctx.createBuffer(1, 1, 22050);
     const source = ctx.createBufferSource();
@@ -206,11 +199,10 @@ export function unlockAudioContext() {
     source.connect(ctx.destination);
     source.start(0);
   } catch (e) {
-    // Ignore errors during unlock
+    // Ignore
   }
 }
 
-// Initialize Global Unlock Listeners for Mobile
 export function initializeAudioUnlocker() {
     if (typeof window === 'undefined') return;
 
@@ -221,7 +213,7 @@ export function initializeAudioUnlocker() {
 
     const unlock = () => {
         unlockAudioContext();
-        warmupTTS(); // Also unlock SpeechSynthesis
+        warmupTTS(); 
         
         window.removeEventListener('touchstart', unlock);
         window.removeEventListener('click', unlock);
@@ -244,18 +236,9 @@ export function decode(base64: string): Uint8Array {
     }
     return bytes;
   } catch (e) {
-    console.error("Failed to decode base64 string", e);
+    console.error("Decode failed", e);
     throw e;
   }
-}
-
-export function encode(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
 
 export async function decodeAudioData(
@@ -279,34 +262,48 @@ export async function decodeAudioData(
 }
 
 export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
-  stopGlobalAudio(); // Stop any existing audio
+  stopGlobalAudio(); 
   const ctx = getGlobalAudioContext();
   
+  // FORCE RESUME for reliability
   if (ctx.state === 'suspended') {
-      ctx.resume().catch(e => console.error("Failed to resume audio context", e));
+      ctx.resume().then(() => {
+          startSource(ctx, buffer, onEnded);
+      }).catch(e => {
+          console.error("Failed to resume ctx before play", e);
+          // Try to play anyway
+          startSource(ctx, buffer, onEnded);
+      });
+  } else {
+      startSource(ctx, buffer, onEnded);
   }
+}
 
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(ctx.destination);
-  source.onended = () => {
-    if (onEnded) onEnded();
-  };
-  source.start(0);
-  globalSource = source;
+function startSource(ctx: AudioContext, buffer: AudioBuffer, onEnded?: () => void) {
+    try {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.onended = () => {
+            if (onEnded) onEnded();
+        };
+        source.start(0);
+        globalSource = source;
+    } catch (e) {
+        console.error("Source start failed", e);
+        if(onEnded) onEnded();
+    }
 }
 
 export function stopGlobalAudio() {
-  // Flag sequential native TTS to stop
   isStopped = true;
   stopNativeAudio();
 
-  // Stop Web Audio
   if (globalSource) {
     globalSource.onended = null;
     try {
       globalSource.stop();
-    } catch (e) { /* Ignore */ }
+    } catch (e) { }
     globalSource.disconnect();
     globalSource = null;
   }
