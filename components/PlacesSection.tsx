@@ -127,6 +127,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
   const handleToggleAudio = async (place: Place) => {
       // CRITICAL: Unlock audio context immediately on user interaction
+      // This prevents mobile browsers from blocking the async play() call later
       unlockAudioContext();
       
       // If clicking the same playing place, stop it.
@@ -147,21 +148,12 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       const name = (content.name || "").trim();
       const description = (content.description || "").trim();
       const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
+      // Remove quotes to prevent TTS weirdness
       const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
 
-      // --- MOBILE FIX: Indian Languages Logic ---
-      // Gemini TTS preview currently only supports English properly.
-      // For Telugu, Hindi, Tamil, Kannada, we MUST use Native TTS immediately.
-      // This also fixes the mobile async block issue, as speak() is called synchronously.
-      if (language !== 'en') {
-          speak(textToSpeak, language, () => {
-              if(isMounted.current) setPlayingPlaceId(null);
-          });
-          setPlayingPlaceId(place.id);
-          return;
-      }
-
-      // --- ENGLISH LOGIC (Use High Quality API) ---
+      // --- STRATEGY UPDATE ---
+      // We now try the High-Quality API for ALL languages first.
+      // If the API fails (network/timeout), we fallback to Native TTS (robotic).
       
       const cacheKey = `${language}-${place.id}`;
 
@@ -198,7 +190,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
           if (!textToSpeak) throw new Error("No content");
 
-          // 3. Try Backend API (English Only)
+          // 3. Try Backend API (High Quality AI Voice)
           try {
               const response = await fetch('/api/generate-tts', {
                   method: 'POST',

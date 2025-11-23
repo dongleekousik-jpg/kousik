@@ -10,7 +10,8 @@ import {
     pauseGlobalAudio, 
     resumeGlobalAudio, 
     getGlobalAudioContext,
-    speak 
+    speak,
+    unlockAudioContext
 } from '../utils/audio';
 import { Icon } from '../constants/icons';
 
@@ -44,19 +45,10 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
         setLoading(true);
         const textToSpeak = `${placeContent.name}. ${placeContent.importance}`.trim();
 
-        // --- MOBILE FIX: Indian Languages Logic ---
-        // Force Native TTS for Telugu, Hindi, etc.
-        // This bypasses the English-only API and solves mobile blocking issues.
-        if (language !== 'en') {
-             speak(textToSpeak, language, () => {
-                 if(isMounted.current) setStatus('stopped');
-             });
-             setStatus('playing');
-             setLoading(false);
-             return;
-        }
+        // Unlock audio for mobile
+        unlockAudioContext();
 
-        // Try Backend API (English Only)
+        // Try Backend API (High Quality AI)
         try {
             const response = await fetch('/api/generate-tts', {
                 method: 'POST',
@@ -89,6 +81,7 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
         }
     } catch (error) {
         // FALLBACK: Native TTS
+        // If the AI fails, we use the robotic voice, but it's better than silence.
         if (isMounted.current) {
             const textToSpeak = `${placeContent.name}. ${placeContent.importance}`.trim();
             speak(textToSpeak, language, () => {
@@ -111,6 +104,7 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
     }
 
     if (audioCache[cacheKey]) {
+        unlockAudioContext(); // Ensure unlocked before playing cache
         playGlobalAudio(audioCache[cacheKey], () => {
              if(isMounted.current) setStatus('stopped');
         });

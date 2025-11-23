@@ -34,7 +34,6 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
   // --- CHUNKING STRATEGY ---
   // Long text fails on many Android/Chrome TTS engines.
   // We split by sentence boundaries to keep chunks small.
-  // Regex looks for periods, questions, exclamations followed by space or end of string.
   const rawChunks = text.match(/[^.!?]+[.!?]+|[^\s]+(?=\s|$)/g) || [text];
   
   // Clean up chunks
@@ -72,9 +71,11 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
           utterance.voice = matchingVoice;
       }
 
-      // Adjust rate for non-English to be slightly slower for clarity
-      utterance.rate = language === 'en' ? 0.95 : 0.85;
-      utterance.pitch = 1.0;
+      // --- ROBOTIC VOICE REDUCTION ---
+      // Native voices often sound too fast or tinny.
+      // Slowing down slightly (0.85) and standardizing pitch helps.
+      utterance.rate = 0.85; // Slightly slower than default
+      utterance.pitch = 1.0; 
 
       // Only fire onEnd for the very last chunk
       if (index === chunks.length - 1) {
@@ -265,6 +266,7 @@ export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
   stopGlobalAudio(); // Stop any existing audio
   const ctx = getGlobalAudioContext();
   
+  // Ensure we are resumed before playing
   if (ctx.state === 'suspended') {
       ctx.resume().catch(e => console.error("Failed to resume audio context", e));
   }
