@@ -13,7 +13,8 @@ import {
   getAudioFromDB,
   saveAudioToDB,
   speak,
-  unlockAudioContext,
+  startKeepAlive, // NEW
+  stopKeepAlive,  // NEW
   warmupTTS
 } from '../utils/audio';
 
@@ -123,9 +124,8 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // 1. Immediate Unlock to prevent mobile blocking
-      unlockAudioContext();
-      warmupTTS(); 
+      // 1. CRITICAL: Start Keep Alive silence immediately on click to prevent mobile sleep
+      startKeepAlive();
       
       if (playingPlaceId === place.id) {
           stopGlobalAudio();
@@ -134,6 +134,9 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       }
 
       stopGlobalAudio();
+      // Restart keep alive because stopGlobalAudio stops it
+      startKeepAlive();
+      
       setPlayingPlaceId(null);
 
       const requestId = `${Date.now()}-${place.id}`;
@@ -220,6 +223,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               }
           } catch (apiError) {
               console.warn("Using Native Fallback", apiError);
+              stopKeepAlive(); // Stop silence before native speak
               
               if (activeRequestId.current === requestId && isMounted.current) {
                   speak(textToSpeak, language, () => {
@@ -231,6 +235,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
 
       } catch (error) {
           console.error("Playback failed", error);
+          stopKeepAlive();
       } finally {
           if (isMounted.current && activeRequestId.current === requestId) {
               setLoadingPlaceId(null);
