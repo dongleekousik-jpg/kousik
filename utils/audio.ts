@@ -1,42 +1,28 @@
 
-
 export const stopNativeAudio = () => {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     window.speechSynthesis.cancel();
   }
 };
 
-// Global reference to prevent garbage collection of the utterance
+// Global reference isn't strictly needed if we queue, but good for safety
 let currentUtterance: SpeechSynthesisUtterance | null = null;
 
-const waitForVoices = (): Promise<SpeechSynthesisVoice[]> => {
-    return new Promise((resolve) => {
-        const voices = window.speechSynthesis.getVoices();
-        if (voices.length > 0) {
-            resolve(voices);
-            return;
-        }
-        
-        // Timeout to prevent hanging if voices never load
-        const timeout = setTimeout(() => {
-            resolve([]);
-        }, 3000);
-
-        window.speechSynthesis.onvoiceschanged = () => {
-            clearTimeout(timeout);
-            resolve(window.speechSynthesis.getVoices());
-        };
-    });
+// Helper to trigger voice loading (async) but we won't await it in speak()
+const preloadVoices = () => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.getVoices();
+    }
 };
 
-export const speak = async (text: string, language: string, onEnd: () => void) => {
+export const speak = (text: string, language: string, onEnd: () => void) => {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     console.warn('Speech synthesis not supported');
     onEnd();
     return;
   }
 
-  // Mobile Fix: explicitly resume synthesis to prevent "stuck" state on Android/iOS
+  // Mobile Fix: explicitly resume synthesis to prevent "stuck" state
   if (window.speechSynthesis.paused) {
       window.speechSynthesis.resume();
   }
@@ -45,13 +31,21 @@ export const speak = async (text: string, language: string, onEnd: () => void) =
   stopGlobalAudio();
   window.speechSynthesis.cancel();
 
-  // Create utterance
-  const utterance = new SpeechSynthesisUtterance(text);
-  currentUtterance = utterance; // Keep reference!
+  // --- CHUNKING STRATEGY ---
+  // Long text fails on many Android/Chrome TTS engines.
+  // We split by sentence boundaries to keep chunks small.
+  // Regex looks for periods, questions, exclamations followed by space or end of string.
+  const rawChunks = text.match(/[^.!?]+[.!?]+|[^\s]+(?=\s|$)/g) || [text];
+  
+  // Clean up chunks
+  const chunks = rawChunks.map(c => c.trim()).filter(c => c.length > 0);
 
-  // --- CRITICAL: Set correct BCP 47 Language Tags for Mobile ---
-  // This tells iOS/Android to switch to the correct language engine (e.g. Telugu)
-  // instead of trying to read Telugu text with an English voice.
+  if (chunks.length === 0) {
+      onEnd();
+      return;
+  }
+
+  // --- LANGUAGE SETUP ---
   const langMap: Record<string, string> = {
       'en': 'en-US',
       'te': 'te-IN',
@@ -61,44 +55,45 @@ export const speak = async (text: string, language: string, onEnd: () => void) =
   };
   
   const targetLang = langMap[language] || 'en-US';
-  utterance.lang = targetLang;
-
-  // Robust Voice Selection: Wait for voices to load first
-  const voices = await waitForVoices();
   
-  // Try to find a voice that specifically matches the requested language
+  // Attempt to find voice ONCE
+  const voices = window.speechSynthesis.getVoices();
+  // Try exact match -> loose match -> language only match
   const matchingVoice = voices.find(v => v.lang === targetLang) || 
-                        voices.find(v => v.lang.includes(language));
+                        voices.find(v => v.lang.replace('_', '-').toLowerCase() === targetLang.toLowerCase()) ||
+                        voices.find(v => v.lang.startsWith(language));
 
-  if (matchingVoice) {
-      utterance.voice = matchingVoice;
-      console.log(`Selected Voice: ${matchingVoice.name} (${matchingVoice.lang})`);
-  } else {
-      console.log(`No specific voice found for ${targetLang}, relying on OS default.`);
-  }
+  // Queue all chunks
+  chunks.forEach((chunk, index) => {
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.lang = targetLang;
+      
+      if (matchingVoice) {
+          utterance.voice = matchingVoice;
+      }
 
-  // Rate/Pitch adjustment
-  // Keep rate slightly slower for non-English to ensure clarity
-  utterance.rate = language === 'en' ? 0.9 : 0.85; 
-  utterance.pitch = 1.0; 
+      // Adjust rate for non-English to be slightly slower for clarity
+      utterance.rate = language === 'en' ? 0.95 : 0.85;
+      utterance.pitch = 1.0;
 
-  utterance.onend = () => {
-    currentUtterance = null;
-    onEnd();
-  };
+      // Only fire onEnd for the very last chunk
+      if (index === chunks.length - 1) {
+          utterance.onend = () => {
+              currentUtterance = null;
+              onEnd();
+          };
+          utterance.onerror = (e) => {
+              console.error('TTS Error (last chunk):', e);
+              currentUtterance = null;
+              onEnd();
+          };
+      } else {
+          utterance.onerror = (e) => console.warn('TTS Error (chunk):', e);
+      }
 
-  utterance.onerror = (e) => {
-    console.error('TTS Error:', e);
-    currentUtterance = null;
-    onEnd();
-  };
-
-  try {
-     window.speechSynthesis.speak(utterance);
-  } catch (e) {
-     console.error("Speech synthesis failed immediately", e);
-     onEnd();
-  }
+      currentUtterance = utterance; // Keep ref to latest
+      window.speechSynthesis.speak(utterance);
+  });
 };
 
 // Web Audio API implementation for Gemini TTS
@@ -174,7 +169,7 @@ export function unlockAudioContext() {
   
   if (ctx.state === 'suspended') {
     ctx.resume().then(() => {
-        console.log("AudioContext resumed successfully");
+        // console.log("AudioContext resumed");
     }).catch(e => console.error("Failed to resume audio context", e));
   }
   
@@ -195,11 +190,20 @@ export function unlockAudioContext() {
 export function initializeAudioUnlocker() {
     if (typeof window === 'undefined') return;
 
+    // Trigger voice loading immediately
+    preloadVoices();
+    if ('speechSynthesis' in window) {
+         window.speechSynthesis.onvoiceschanged = () => {
+             // Just listening to trigger load
+         };
+    }
+
     const unlock = () => {
         unlockAudioContext();
         // Also prime TTS engine for iOS
         if ('speechSynthesis' in window) {
             window.speechSynthesis.resume(); 
+            window.speechSynthesis.getVoices(); // Another attempt to load voices
         }
         // Remove listeners after first successful unlock attempt
         window.removeEventListener('touchstart', unlock);

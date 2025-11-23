@@ -39,15 +39,14 @@ const NaradaChat: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // Call the secure backend API instead of using the SDK directly in the browser
-      // This fixes the "process is not defined" error during Vercel build
+      // Call the secure backend API
       const response = await fetch('/api/narada', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, language })
       });
 
-      // Check if we got an HTML response (happens in local preview/AI Studio sometimes)
+      // Check for HTML response (Preview/Offline)
       const contentType = response.headers.get("content-type");
       if (!response.ok || !contentType || !contentType.includes("application/json")) {
           throw new Error("API Unavailable or Misconfigured");
@@ -59,20 +58,18 @@ const NaradaChat: React.FC = () => {
         id: (Date.now() + 1).toString(),
         sender: 'narada',
         text: data.text || "Om Namo Venkatesaya. I am currently meditating.",
-        mapLink: data.mapLink,
-        // Backend handles filtering, so we trust its output. Sources are removed as requested.
+        mapLink: data.mapLink ? data.mapLink : undefined,
       };
       setMessages((prev) => [...prev, naradaMessage]);
 
     } catch (error) {
       console.error('Error with Chat API:', error);
       
-      // Smart Fallback for Preview/Offline modes
       let fallbackText = 'My apologies, devotee. I am having trouble connecting to the divine realms. Please check your internet connection.';
       
-      // If likely a Vercel configuration error
-      if ((error as Error).message.includes("API Unavailable")) {
-         fallbackText = "I am currently in 'Mauna Vratam' (Silence) because the server is unreachable. Please try again later.";
+      const errMsg = (error as Error).message;
+      if (errMsg.includes("API Unavailable") || errMsg.includes("Misconfigured")) {
+         fallbackText = "I am currently in 'Mauna Vratam' (Silence) because the server is unavailable. Please check Vercel settings or internet.";
       }
 
       const errorMessage: ChatMessage = {
