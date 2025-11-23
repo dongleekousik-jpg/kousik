@@ -67,7 +67,9 @@ export const getAudioFromDB = async (key: string): Promise<string | null> => {
 export function getGlobalAudioContext(): AudioContext {
   if (!globalAudioContext) {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    globalAudioContext = new AudioContextClass({ sampleRate: 24000 }); // Match Gemini 24kHz
+    // FIX: Do not force sampleRate. Let the mobile device use its native hardware rate (44.1k/48k).
+    // decodeAudioData will automatically resample the 24kHz source to match this context.
+    globalAudioContext = new AudioContextClass();
   }
   return globalAudioContext;
 }
@@ -87,8 +89,9 @@ export function startKeepAlive() {
         }
         
         // Create a buffer with tiny random noise (imperceptible but keeps hardware awake)
+        // Use the Context's native sampleRate for the silent buffer to avoid resampling glitches on mobile
         const bufferSize = 4096; 
-        const buffer = ctx.createBuffer(1, bufferSize, 24000);
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate); 
         const data = buffer.getChannelData(0);
         for(let i=0; i<bufferSize; i++) {
             data[i] = (Math.random() * 0.000001); // Near zero
@@ -138,8 +141,9 @@ export function initializeAudioUnlocker() {
 
     const unlock = () => {
         unlockAudioContext();
-        window.removeEventListener('touchstart', unlock);
-        window.removeEventListener('click', unlock);
+        // Don't remove listeners immediately on mobile; keeping them ensures repeated interactions work
+        // window.removeEventListener('touchstart', unlock);
+        // window.removeEventListener('click', unlock);
     };
 
     window.addEventListener('touchstart', unlock, { passive: true });
@@ -147,8 +151,7 @@ export function initializeAudioUnlocker() {
 }
 
 // --- WAV HEADER INJECTION STRATEGY ---
-// Instead of manual Float32 conversion (which fails often), we wrap the RAW PCM
-// in a valid WAV container and let the browser decode it natively.
+// Wraps RAW PCM in a valid WAV container so browser can decode it natively.
 
 function addWavHeader(samples: Uint8Array, sampleRate: number = 24000, numChannels: number = 1, bitDepth: number = 16): ArrayBuffer {
     const buffer = new ArrayBuffer(44 + samples.length);
@@ -164,7 +167,7 @@ function addWavHeader(samples: Uint8Array, sampleRate: number = 24000, numChanne
     writeString(view, 12, 'fmt ');
     // format chunk length
     view.setUint32(16, 16, true);
-    // sample format (raw)
+    // sample format (1 = PCM)
     view.setUint16(20, 1, true);
     // channel count
     view.setUint16(22, numChannels, true);
@@ -196,19 +199,25 @@ function writeString(view: DataView, offset: number, string: string) {
 
 // This is the main function components should call
 export async function base64ToAudioBuffer(base64: string, ctx: AudioContext): Promise<AudioBuffer> {
-    // 1. Decode Base64 string to raw binary string
-    const binaryString = window.atob(base64.replace(/\s/g, ''));
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+    try {
+        // 1. Decode Base64 string to raw binary string
+        const binaryString = window.atob(base64.replace(/\s/g, ''));
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // 2. Add WAV Header (24kHz, 16-bit Mono is standard for Gemini Flash)
+        const wavBytes = addWavHeader(bytes, 24000, 1, 16);
+
+        // 3. Decode using browser's native decoder
+        // Note: The browser will handle resampling this 24kHz buffer to the context's sampleRate (e.g. 48kHz)
+        return await ctx.decodeAudioData(wavBytes);
+    } catch (e) {
+        console.error("Audio Decoding Failed. Base64 length:", base64.length, e);
+        throw e;
     }
-
-    // 2. Add WAV Header (24kHz, 16-bit Mono is standard for Gemini Flash)
-    const wavBytes = addWavHeader(bytes, 24000, 1, 16);
-
-    // 3. Decode using browser's native decoder (Robust & Hardware Accelerated)
-    return await ctx.decodeAudioData(wavBytes);
 }
 
 export function playGlobalAudio(buffer: AudioBuffer, onEnded?: () => void) {
@@ -314,9 +323,11 @@ export const speak = (text: string, language: string, onEnd: () => void) => {
       utterance.pitch = 1.0;
 
       const voices = window.speechSynthesis.getVoices();
+      // Try to find high quality / google voices
       const preferredVoice = 
-        voices.find(v => v.lang === targetLang && (v.name.includes("Google") || v.name.includes("Enhanced"))) ||
-        voices.find(v => v.lang === targetLang);
+        voices.find(v => v.lang === targetLang && (v.name.includes("Google") || v.name.includes("Enhanced") || v.name.includes("Premium"))) ||
+        voices.find(v => v.lang === targetLang) ||
+        voices.find(v => v.lang.startsWith(targetLang.split('-')[0]));
       
       if (preferredVoice) utterance.voice = preferredVoice;
 
