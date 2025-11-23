@@ -10,8 +10,7 @@ import {
     pauseGlobalAudio, 
     resumeGlobalAudio, 
     getGlobalAudioContext,
-    speak,
-    prepareAudioContext
+    speak 
 } from '../utils/audio';
 import { Icon } from '../constants/icons';
 
@@ -45,7 +44,19 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
         setLoading(true);
         const textToSpeak = `${placeContent.name}. ${placeContent.importance}`.trim();
 
-        // Try Backend API
+        // --- MOBILE FIX: Indian Languages Logic ---
+        // Force Native TTS for Telugu, Hindi, etc.
+        // This bypasses the English-only API and solves mobile blocking issues.
+        if (language !== 'en') {
+             speak(textToSpeak, language, () => {
+                 if(isMounted.current) setStatus('stopped');
+             });
+             setStatus('playing');
+             setLoading(false);
+             return;
+        }
+
+        // Try Backend API (English Only)
         try {
             const response = await fetch('/api/generate-tts', {
                 method: 'POST',
@@ -93,9 +104,6 @@ const VirtualGuide: React.FC<VirtualGuideProps> = ({ placeId, placeContent, onCl
   };
 
   const handlePlay = (autoPlay = false) => {
-    // CRITICAL FOR MOBILE: Warm up audio engine on user interaction
-    if (!autoPlay) prepareAudioContext();
-
     if (status === 'paused') {
         resumeGlobalAudio();
         setStatus('playing');

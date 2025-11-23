@@ -13,7 +13,7 @@ import {
   getAudioFromDB,
   saveAudioToDB,
   speak,
-  prepareAudioContext
+  unlockAudioContext
 } from '../utils/audio';
 
 interface PlacesSectionProps {
@@ -126,9 +126,8 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
   }, [language]);
 
   const handleToggleAudio = async (place: Place) => {
-      // CRITICAL FOR MOBILE: This MUST be the first line in the click handler.
-      // It warms up the audio context while waiting for the fetch.
-      prepareAudioContext();
+      // CRITICAL: Unlock audio context immediately on user interaction
+      unlockAudioContext();
       
       // If clicking the same playing place, stop it.
       if (playingPlaceId === place.id) {
@@ -143,6 +142,27 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
       const requestId = `${Date.now()}-${place.id}`;
       activeRequestId.current = requestId;
 
+      // Prepare Text
+      const content = t.places[place.id as keyof typeof t.places];
+      const name = (content.name || "").trim();
+      const description = (content.description || "").trim();
+      const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
+      const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
+
+      // --- MOBILE FIX: Indian Languages Logic ---
+      // Gemini TTS preview currently only supports English properly.
+      // For Telugu, Hindi, Tamil, Kannada, we MUST use Native TTS immediately.
+      // This also fixes the mobile async block issue, as speak() is called synchronously.
+      if (language !== 'en') {
+          speak(textToSpeak, language, () => {
+              if(isMounted.current) setPlayingPlaceId(null);
+          });
+          setPlayingPlaceId(place.id);
+          return;
+      }
+
+      // --- ENGLISH LOGIC (Use High Quality API) ---
+      
       const cacheKey = `${language}-${place.id}`;
 
       // 1. Check Memory Cache
@@ -176,16 +196,9 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
               return;
           }
 
-          // 3. Prepare Text
-          const content = t.places[place.id as keyof typeof t.places];
-          const name = (content.name || "").trim();
-          const description = (content.description || "").trim();
-          const importance = 'importance' in content ? ((content as any).importance || "").trim() : "";
-          const textToSpeak = `${name}. ${description} ${importance}`.replace(/["']/g, "").trim();
-
           if (!textToSpeak) throw new Error("No content");
 
-          // 4. Try Backend API
+          // 3. Try Backend API (English Only)
           try {
               const response = await fetch('/api/generate-tts', {
                   method: 'POST',
@@ -215,7 +228,7 @@ const PlacesSection: React.FC<PlacesSectionProps> = ({ title, places, isSpiritua
                    setPlayingPlaceId(place.id);
               }
           } catch (apiError) {
-              // 5. Fallback to Native TTS
+              // 4. Fallback to Native TTS
               console.warn("API TTS failed, using native fallback", apiError);
               
               if (activeRequestId.current === requestId && isMounted.current) {

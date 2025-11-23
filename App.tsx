@@ -1,6 +1,7 @@
+
 // App.tsx
 
-import React, { useState, createContext, useContext } from 'react';
+import React, { useState, createContext, useContext, useEffect } from 'react';
 import { Language, content } from './constants/content';
 import Header from './components/Header';
 import Home from './components/Home';
@@ -8,6 +9,7 @@ import PlacesSection from './components/PlacesSection';
 import { importantPlaces, emergencyServices, spiritualPlaces } from './constants/data';
 import RulesSection from './components/RulesSection';
 import NaradaChat from './components/NaradaChat';
+import { initializeAudioUnlocker } from './utils/audio';
 
 type Page = 'home' | 'important' | 'emergency' | 'spiritual' | 'rules';
 
@@ -30,6 +32,11 @@ export const useLanguage = () => {
 const App: React.FC = () => {
   const [page, setPage] = useState<Page>('home');
   const [language, setLanguage] = useState<Language>('en');
+
+  // Initialize Audio Unlocker for Mobile
+  useEffect(() => {
+    initializeAudioUnlocker();
+  }, []);
 
   const languageContextValue: LanguageContextType = {
     language,
