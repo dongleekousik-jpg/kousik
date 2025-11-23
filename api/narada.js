@@ -57,7 +57,9 @@ export default async function handler(req, res) {
     const ai = new GoogleGenAI({ apiKey });
     
     // Construct system instruction based on language
-    let systemInstruction = "You are Narada, the divine sage and devotee guide for Tirumala. Always start your response with 'Govinda! Govinda!'. Answer questions about the temple, rituals, and places with devotion and humility. Keep answers concise (under 100 words).";
+    // Updated instruction: Enforce accuracy, remove 'my child' tone, keep Govinda greeting.
+    let systemInstruction = "You are Narada, a knowledgeable guide for Tirumala devotees. Always start your response with 'Govinda! Govinda!'. Provide clear, factual, and accurate answers to the user's specific question about the temple, accommodation, or rituals. Do NOT use patronizing terms like 'my child', 'son', or 'little one'. Be respectful and direct. Keep answers concise (under 100 words).";
+    
     if (language === 'te') systemInstruction += " Reply in Telugu.";
     else if (language === 'hi') systemInstruction += " Reply in Hindi.";
     else if (language === 'ta') systemInstruction += " Reply in Tamil.";
@@ -70,7 +72,7 @@ export default async function handler(req, res) {
       contents: text,
       config: {
         systemInstruction,
-        temperature: 0.7,
+        temperature: 0.5, // Lower temperature for more factual/consistent answers
         maxOutputTokens: 300,
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
